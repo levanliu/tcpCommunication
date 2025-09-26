@@ -1,0 +1,27 @@
+cc_library(
+    name = "TCPCommunication",
+    srcs = ["TCPCommunication.cpp"],
+    hdrs = ["TCPCommunication.hpp"],
+    copts = ["-std=c++17"],
+    deps = [
+        "@boost.asio",
+    ],
+)
+
+cc_binary(
+    name = "client_main",
+    srcs = ["client_main.cpp"],
+    copts = ["-std=c++17"],
+    deps = [
+        ":TCPCommunication",
+    ],
+)
+
+cc_binary(
+    name = "server_main",
+    srcs = ["server_main.cpp"],
+    copts = ["-std=c++17"],
+    deps = [
+        ":TCPCommunication",
+    ],
+)
