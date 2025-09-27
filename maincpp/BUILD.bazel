@@ -1,27 +1,23 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
+
 cc_library(
-    name = "TCPCommunication",
-    srcs = ["TCPCommunication.cpp"],
-    hdrs = ["TCPCommunication.hpp"],
-    copts = ["-std=c++17"],
+    name = "E5810Client_lib",
+    srcs = ["E5810Client.cpp"],
+    hdrs = ["E5810Client.hpp"],
+    deps = ["@boost.asio"],
+)
+
+cc_library(
+    name = "SCPIInstruement_lib",
+    srcs = ["SCPIInstrumentSimulator.cpp"],
+    hdrs = ["SCPIInstrumentSimulator.hpp"],
     deps = [
-        "@boost.asio",
+        ":E5810Client_lib",
     ],
 )
 
 cc_binary(
-    name = "client_main",
-    srcs = ["client_main.cpp"],
-    copts = ["-std=c++17"],
-    deps = [
-        ":TCPCommunication",
-    ],
-)
-
-cc_binary(
-    name = "server_main",
-    srcs = ["server_main.cpp"],
-    copts = ["-std=c++17"],
-    deps = [
-        ":TCPCommunication",
-    ],
+    name = "main",
+    srcs = ["main.cpp"],
+    deps = [":SCPIInstruement_lib"],
 )
