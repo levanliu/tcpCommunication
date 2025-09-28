@@ -7,25 +7,27 @@ int main() {
     try {
         TCPCommunication server(TCPCommunication::Mode::Server);
 
-        server.setOnConnect([](TCPCommunication::ConnectionID id) {
-            std::cout << "Server: Client " << id << " connected.\n";
+        server.setOnConnect([](bool success) {
+            if (success) {
+                std::cout << "Server: Client connected.\n";
+            }
         });
 
-        server.setOnDisconnect([](TCPCommunication::ConnectionID id) {
-            std::cout << "Server: Client " << id << " disconnected.\n";
+        server.setOnDisconnect([]() {
+            std::cout << "Server: Client disconnected.\n";
         });
 
-        server.setOnRead([&server](TCPCommunication::ConnectionID id, std::vector<char>& data) {
+        server.setOnRead([&server](std::vector<char>& data) {
             std::string message(data.begin(), data.end());
-            std::cout << "Server: Received from " << id << ": " << message << std::endl;
+            std::cout << "Server: Received: " << message << std::endl;
 
-            // 回显消息
+            // 回显消息到所有连接的客户端
             std::string response = "Server received: " + message;
-            server.write(response, id);
+            server.write(response);
         });
 
-        server.setOnError([](TCPCommunication::ConnectionID id, const boost::system::error_code& ec, const std::string& msg) {
-            std::cerr << "Server Error on connection " << id << ": " << msg << " (" << ec.message() << ")\n";
+        server.setOnError([](const boost::system::error_code& ec, const std::string& msg) {
+            std::cerr << "Server Error: " << msg << " (" << ec.message() << ")\n";
         });
 
         server.setTimeout(5000); // 5秒不活动则超时

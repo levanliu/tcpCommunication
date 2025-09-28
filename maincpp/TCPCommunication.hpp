@@ -1,13 +1,11 @@
 #pragma once
 
-#include <iostream>
 #include <string>
 #include <vector>
 #include <memory>
 #include <functional>
 #include <thread>
 #include <mutex>
-#include <unordered_map>
 #include <atomic>
 
 // 引入 Boost.Asio 库，这是实现异步网络通信的核心
@@ -31,40 +29,33 @@ public:
         Server
     };
 
-    // 为服务器模式下的每个连接定义一个唯一的ID类型
-    using ConnectionID = uint64_t;
-    // 定义一个特殊的ID，用于客户端模式或表示无效连接
-    static constexpr ConnectionID INVALID_ID = 0;
+
 
     // --- 回调函数类型定义 ---
 
     /**
      * @brief 连接回调函数
-     * @param id 对于服务器，是新客户端的ConnectionID；对于客户端，是固定的INVALID_ID+1。
-     * 如果连接失败，id为INVALID_ID。
+     * @param success 连接是否成功。
      */
-    using OnConnectCallback = std::function<void(ConnectionID id)>;
+    using OnConnectCallback = std::function<void(bool success)>;
 
     /**
      * @brief 断开连接回调函数
-     * @param id 断开连接的客户端ID（服务器模式）或固定ID（客户端模式）。
      */
-    using OnDisconnectCallback = std::function<void(ConnectionID id)>;
+    using OnDisconnectCallback = std::function<void()>;
 
     /**
      * @brief 数据接收回调函数
-     * @param id 发送数据的客户端ID（服务器模式）或固定ID（客户端模式）。
      * @param data 接收到的数据。
      */
-    using OnReadCallback = std::function<void(ConnectionID id, std::vector<char>& data)>;
+    using OnReadCallback = std::function<void(std::vector<char>& data)>;
 
     /**
      * @brief 错误回调函数
-     * @param id 发生错误的连接ID。
      * @param error_code 错误码。
      * @param message 错误信息。
      */
-    using OnErrorCallback = std::function<void(ConnectionID id, const boost::system::error_code& error_code, const std::string& message)>;
+    using OnErrorCallback = std::function<void(const boost::system::error_code& error_code, const std::string& message)>;
 
 
     /**
@@ -92,29 +83,26 @@ public:
 
     /**
      * @brief 断开连接。
-     * - 客户端模式: 断开与服务器的连接。id参数被忽略。
-     * - 服务器模式: 断开指定ConnectionID的客户端连接。如果id为INVALID_ID，则断开所有连接并停止服务器。
-     * @param id 要断开的连接ID。
+     * - 客户端模式: 断开与服务器的连接。
+     * - 服务器模式: 断开所有客户端连接并停止服务器。
      */
-    void disconnect(ConnectionID id = INVALID_ID);
+    void disconnect();
 
     /**
      * @brief 发送数据。
-     * - 客户端模式: 异步发送数据到服务器。id参数被忽略。
-     * - 服务器模式: 异步发送数据到指定的客户端。
+     * - 客户端模式: 异步发送数据到服务器。
+     * - 服务器模式: 异步广播数据到所有连接的客户端。
      * @param message 要发送的字符串数据。
-     * @param id 目标连接的ID。
      */
-    void write(const std::string& message, ConnectionID id = INVALID_ID + 1);
+    void write(const std::string& message);
     
     /**
      * @brief 发送数据。
-     * - 客户端模式: 异步发送数据到服务器。id参数被忽略。
-     * - 服务器模式: 异步发送数据到指定的客户端。
+     * - 客户端模式: 异步发送数据到服务器。
+     * - 服务器模式: 异步广播数据到所有连接的客户端。
      * @param data 要发送的二进制数据。
-     * @param id 目标连接的ID。
      */
-    void write(const std::vector<char>& data, ConnectionID id = INVALID_ID + 1);
+    void write(const std::vector<char>& data);
 
 
     /**
@@ -152,7 +140,7 @@ private:
     void handle_accept(std::shared_ptr<Session> new_session, const boost::system::error_code& ec);
     
     // 从会话列表中移除一个会话
-    void remove_session(ConnectionID id);
+    void remove_session(std::shared_ptr<Session> session);
 
     // --- 成员变量 ---
     const Mode mode_;
@@ -169,12 +157,10 @@ private:
 
     // 服务器模式专用
     std::unique_ptr<boost::asio::ip::tcp::acceptor> acceptor_;
-    std::unordered_map<ConnectionID, std::shared_ptr<Session>> sessions_;
-    std::atomic<ConnectionID> next_connection_id_{1};
-    std::mutex sessions_mutex_;
 
-    // 客户端模式专用
-    std::shared_ptr<Session> client_session_;
+    // 单一会话（客户端或服务器模式）
+    std::shared_ptr<Session> session_;
+    std::mutex session_mutex_;
 
     // 配置
     std::atomic<long> timeout_ms_{0};

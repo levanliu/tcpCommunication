@@ -1,5 +1,6 @@
 #include "TCPCommunication.hpp"
 #include <vector>
+#include <algorithm>
 
 // 使用boost::asio的命名空间
 using boost::asio::ip::tcp;
@@ -15,11 +16,10 @@ using boost::system::error_code;
  */
 class TCPCommunication::Session : public std::enable_shared_from_this<Session> {
 public:
-    Session(tcp::socket socket, TCPCommunication* owner, ConnectionID id)
+    Session(tcp::socket socket, TCPCommunication* owner)
         : socket_(std::move(socket)),
           timer_(socket_.get_executor()),
-          owner_(owner),
-          id_(id) {}
+          owner_(owner) {}
 
     ~Session() {
         // 当Session对象被销毁时，确保定时器被取消
@@ -47,15 +47,19 @@ public:
         boost::asio::post(socket_.get_executor(), [this, self = shared_from_this()]() {
             if (socket_.is_open()) {
                 error_code ec;
-                socket_.shutdown(tcp::socket::shutdown_both, ec);
-                socket_.close(ec);
+                // Gracefully shutdown and close the socket
+                // These operations may fail, but we're already closing
+                auto shutdown_result = socket_.shutdown(tcp::socket::shutdown_both, ec);
+                auto close_result = socket_.close(ec);
+                // Suppress unused variable warnings
+                (void)shutdown_result;
+                (void)close_result;
             }
             timer_.cancel();
         });
     }
 
     tcp::socket& socket() { return socket_; }
-    ConnectionID id() const { return id_; }
 
 private:
     void do_read() {
@@ -66,15 +70,15 @@ private:
                     reset_timer();
                     if (owner_->on_read_) {
                         std::vector<char> received_data(read_buffer_.begin(), read_buffer_.begin() + length);
-                        owner_->on_read_(id_, received_data);
+                        owner_->on_read_(received_data);
                     }
                     do_read(); // 继续下一个读取循环
                 } else {
                     // 如果不是操作被取消的错误，则处理断开
                     if (ec != boost::asio::error::operation_aborted) {
-                       owner_->remove_session(id_);
+                       owner_->remove_session(self);
                        if(owner_->on_disconnect_){
-                           owner_->on_disconnect_(id_);
+                           owner_->on_disconnect_();
                        }
                     }
                 }
@@ -101,7 +105,7 @@ private:
     
     void handle_error(const std::string& context, const error_code& ec) {
         if (owner_->on_error_ && ec != boost::asio::error::operation_aborted) {
-            owner_->on_error_(id_, ec, context + " error");
+            owner_->on_error_(ec, context + " error");
         }
         close();
     }
@@ -110,7 +114,6 @@ private:
     boost::asio::steady_timer timer_;
     std::array<char, 8192> read_buffer_;
     TCPCommunication* owner_;
-    const ConnectionID id_;
 };
 
 // --- TCPCommunication 类的实现 ---
@@ -128,7 +131,7 @@ TCPCommunication::~TCPCommunication() {
 void TCPCommunication::stop() {
     if (!is_stopped_.exchange(true)) {
         boost::asio::post(io_context_, [this]() {
-             disconnect(INVALID_ID); // 断开所有连接
+             disconnect(); // 断开所有连接
             if (acceptor_) {
                 acceptor_->close();
             }
@@ -154,17 +157,16 @@ void TCPCommunication::connect(const std::string& host, unsigned short port) {
         auto resolver = std::make_shared<tcp::resolver>(io_context_);
         auto endpoints = resolver->resolve(host, std::to_string(port));
         
-        // 客户端模式下，ID固定为1
-        client_session_ = std::make_shared<Session>(tcp::socket(io_context_), this, INVALID_ID + 1);
+        session_ = std::make_shared<Session>(tcp::socket(io_context_), this);
 
-        boost::asio::async_connect(client_session_->socket(), endpoints,
+        boost::asio::async_connect(session_->socket(), endpoints,
             [this, resolver](const error_code& ec, const tcp::endpoint& /*endpoint*/) {
                 if (!ec) {
-                    client_session_->start();
-                    if (on_connect_) on_connect_(client_session_->id());
+                    session_->start();
+                    if (on_connect_) on_connect_(true);
                 } else {
-                    if (on_connect_) on_connect_(INVALID_ID); // 连接失败
-                    if (on_error_) on_error_(INVALID_ID, ec, "Client connect failed");
+                    if (on_connect_) on_connect_(false); // 连接失败
+                    if (on_error_) on_error_(ec, "Client connect failed");
                 }
             });
     } else { // Server Mode
@@ -174,8 +176,7 @@ void TCPCommunication::connect(const std::string& host, unsigned short port) {
 }
 
 void TCPCommunication::start_accept() {
-    ConnectionID new_id = next_connection_id_++;
-    auto new_session = std::make_shared<Session>(tcp::socket(io_context_), this, new_id);
+    auto new_session = std::make_shared<Session>(tcp::socket(io_context_), this);
 
     acceptor_->async_accept(new_session->socket(),
         [this, new_session](const error_code& ec) {
@@ -185,81 +186,46 @@ void TCPCommunication::start_accept() {
 
 void TCPCommunication::handle_accept(std::shared_ptr<Session> new_session, const error_code& ec) {
     if (!ec) {
-        {
-            std::lock_guard<std::mutex> lock(sessions_mutex_);
-            sessions_[new_session->id()] = new_session;
+        // 如果已经有一个连接，关闭旧的连接
+        if (session_) {
+            session_->close();
         }
-        new_session->start();
-        if (on_connect_) on_connect_(new_session->id());
         
-        // 接受下一个连接
+        session_ = new_session;
+        session_->start();
+        if (on_connect_) on_connect_(true);
+        
+        // 继续接受下一个连接（但只保持一个活动连接）
         start_accept();
     } else {
         if (on_error_ && ec != boost::asio::error::operation_aborted) {
-            on_error_(INVALID_ID, ec, "Server accept failed");
+            on_error_(ec, "Server accept failed");
         }
     }
 }
 
-void TCPCommunication::disconnect(ConnectionID id) {
-    if (mode_ == Mode::Client) {
-        if (client_session_) {
-            client_session_->close();
-            // 在Session的读取循环中处理断开回调和资源清理
-        }
-    } else { // Server Mode
-        if (id != INVALID_ID) {
-            std::shared_ptr<Session> session_to_close;
-            {
-                std::lock_guard<std::mutex> lock(sessions_mutex_);
-                auto it = sessions_.find(id);
-                if (it != sessions_.end()) {
-                    session_to_close = it->second;
-                }
-            }
-            if (session_to_close) {
-                 session_to_close->close();
-            }
-        } else { // Disconnect all
-             std::lock_guard<std::mutex> lock(sessions_mutex_);
-             for(auto const& [key, val] : sessions_){
-                 val->close();
-             }
-             sessions_.clear();
-        }
+void TCPCommunication::disconnect() {
+    std::lock_guard<std::mutex> lock(session_mutex_);
+    if (session_) {
+        session_->close();
+        session_.reset();
     }
 }
 
-void TCPCommunication::write(const std::string& message, ConnectionID id) {
-     write(std::vector<char>(message.begin(), message.end()), id);
+void TCPCommunication::write(const std::string& message) {
+     write(std::vector<char>(message.begin(), message.end()));
 }
 
-void TCPCommunication::write(const std::vector<char>& data, ConnectionID id) {
-     if(mode_ == Mode::Client){
-         if(client_session_){
-             client_session_->do_write(data);
-         }
-     } else {
-        std::shared_ptr<Session> session_to_write;
-        {
-            std::lock_guard<std::mutex> lock(sessions_mutex_);
-            auto it = sessions_.find(id);
-            if(it != sessions_.end()){
-                session_to_write = it->second;
-            }
-        }
-        if(session_to_write){
-            session_to_write->do_write(data);
-        }
-     }
+void TCPCommunication::write(const std::vector<char>& data) {
+    std::lock_guard<std::mutex> lock(session_mutex_);
+    if (session_) {
+        session_->do_write(data);
+    }
 }
 
-void TCPCommunication::remove_session(ConnectionID id) {
-    if(mode_ == Mode::Client){
-        // 客户端会话结束
-        client_session_.reset();
-    } else {
-        std::lock_guard<std::mutex> lock(sessions_mutex_);
-        sessions_.erase(id);
+void TCPCommunication::remove_session(std::shared_ptr<Session> session_to_remove) {
+    std::lock_guard<std::mutex> lock(session_mutex_);
+    if (session_ == session_to_remove) {
+        session_.reset();
     }
 }

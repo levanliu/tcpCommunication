@@ -8,25 +8,25 @@ int main() {
         TCPCommunication client(TCPCommunication::Mode::Client);
         bool connected = false;
 
-        client.setOnConnect([&connected](TCPCommunication::ConnectionID id) {
-            if (id != TCPCommunication::INVALID_ID) {
-                std::cout << "Client: Connected to server with ID " << id << ".\n";
+        client.setOnConnect([&connected](bool success) {
+            if (success) {
+                std::cout << "Client: Connected to server.\n";
                 connected = true;
             } else {
                 std::cout << "Client: Connection failed.\n";
             }
         });
 
-        client.setOnDisconnect([](TCPCommunication::ConnectionID id) {
+        client.setOnDisconnect([]() {
             std::cout << "Client: Disconnected from server.\n";
         });
 
-        client.setOnRead([](TCPCommunication::ConnectionID id, std::vector<char>& data) {
+        client.setOnRead([](std::vector<char>& data) {
             std::string message(data.begin(), data.end());
             std::cout << "Client: Received: " << message << std::endl;
         });
 
-        client.setOnError([](TCPCommunication::ConnectionID id, const boost::system::error_code& ec, const std::string& msg) {
+        client.setOnError([](const boost::system::error_code& ec, const std::string& msg) {
             std::cerr << "Client Error: " << msg << " (" << ec.message() << ")\n";
         });
 
